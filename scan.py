@@ -1,3 +1,15 @@
+import ipaddress
+import socket
+from ssl import create_default_context, SSLError
+from concurrent.futures import ThreadPoolExecutor
+import requests
+from scapy.layers.inet import IP, TCP
+from scapy.sendrecv import sr1
+import time
+from config import protocols
+from main import cve_cache
+
+
 # TCP/IP Fingerprinting using Scapy for Advanced OS Detection
 def tcp_fingerprint(ip, port=80):
     try:
