@@ -1,15 +1,14 @@
 import ipaddress
 import socket
+from urllib.parse import urlparse
 import sys
 from ssl import create_default_context, SSLError
 from concurrent.futures import ThreadPoolExecutor
 import requests
-from colorama import Fore, Style
 from scapy.layers.inet import IP, TCP
 from scapy.sendrecv import sr1
 import time
 from config import protocols
-from main import cve_cache
 
 
 # TCP/IP Fingerprinting using Scapy for Advanced OS Detection
@@ -131,47 +130,35 @@ def detect_firewall(ip):
     except Exception as e:
         return f"Error detecting firewall: {e}"
 
-# Exploit Check and CVE Lookup with Caching
-def cve_check(service_name, cache=None):
-    if cache is None:
-        cache = cve_cache  # Standardmäßig den globalen Cache verwenden
-
-    if service_name in cache:
-        return cache[service_name]
-    try:
-        api_urls = [
-            f"https://cve.circl.lu/api/search/{service_name}",
-            f"https://services.nvd.nist.gov/rest/json/cves/1.0?keyword={service_name}",
-            f"https://vuldb.com/?api"
-        ]
-        cve_data = []
-        for url in api_urls:
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                cve_data.extend(response.json()[:5])
-        cache[service_name] = [cve["id"] for cve in cve_data] if cve_data else []
-        return cache[service_name]
-    except Exception as e:
-        print(f"Error fetching CVE data for {service_name}: {e}")
-        return []
-
 
 # Helper Function to Resolve Domain, Subnet, or IP Range to a List of IPs
 def resolve_targets(target):
     ip_list = []
     try:
-        if '/' in target:
-            subnet = ipaddress.ip_network(target, strict=False)
-            ip_list.extend([str(ip) for ip in subnet])
-        elif '-' in target:
-            start_ip, end_ip = target.split('-')
-            start_ip = ipaddress.IPv4Address(start_ip)
-            end_ip = ipaddress.IPv4Address(end_ip)
-            ip_list.extend([str(ip) for ip in ipaddress.summarize_address_range(start_ip, end_ip)])
-        else:
-            ip_list.append(socket.gethostbyname(target))
+        # 1. Entferne das Schema (http/https) aus der URL, falls vorhanden
+        if target.startswith("http://") or target.startswith("https://"):
+            parsed_url = urlparse(target)
+            target = parsed_url.netloc  # Extrahiere die Domain
+
+        # 2. Prüfe, ob Ziel eine gültige IP-Adresse ist
+        try:
+            ip = ipaddress.ip_address(target)
+            ip_list.append(str(ip))
+            print(f"Einzel-IP erkannt: {ip}")
+            return ip_list  # IP-Adresse gefunden, Rückgabe
+        except ValueError:
+            pass  # Ziel ist keine IP, weiter prüfen
+
+        # 3. Prüfe, ob Ziel eine Domain ist und löse sie auf
+        try:
+            resolved_ip = socket.gethostbyname(target)
+            ip_list.append(resolved_ip)
+            print(f"Domain aufgelöst: {target} -> {resolved_ip}")
+        except socket.gaierror as e:
+            print(f"Fehler beim Auflösen der Domain {target}: {e}")
     except Exception as e:
-        print(f"Error resolving target {target}: {e}")
+        print(f"Allgemeiner Fehler beim Verarbeiten des Ziels {target}: {e}")
+
     return ip_list
 
 # Progress Display
@@ -187,14 +174,14 @@ def port_scan(ip, port, scan_type, timeout, report_path):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
             if s.connect_ex((ip, port)) == 0:
-                cve_info = cve_check(protocol)  # CVEs abrufen
-                cve_summary = f" | CVEs: {', '.join(cve_info[:3])}" if cve_info else ""
-                result = f"{port:<6} open   {protocol}{cve_summary}"
-                write_report(result, report_path)
-                return {"port": port, "status": "open", "protocol": protocol, "cves": cve_info}
+                result = {"port": port, "status": "open", "protocol": protocol}
+                if report_path:
+                    write_report(f"Port: {port:<6} [open] {protocol}", report_path)
+                return result
             else:
                 return {"port": port, "status": "closed"}
     except Exception as e:
+        # Fehler behandeln und zurückgeben
         return {"port": port, "status": "error", "error": str(e)}
 
 

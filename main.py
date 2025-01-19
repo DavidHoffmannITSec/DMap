@@ -3,9 +3,9 @@ from concurrent.futures import as_completed
 from config import aggression_levels, top_100_ports
 from help import display_help
 from scan import *
+from colorama import Fore, Style, init
 
-# CVE-Cache global initialisieren
-cve_cache = {}
+init(autoreset=True)
 
 # Argumente parsen
 def parse_arguments():
