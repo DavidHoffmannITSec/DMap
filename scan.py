@@ -1,8 +1,10 @@
 import ipaddress
 import socket
+import sys
 from ssl import create_default_context, SSLError
 from concurrent.futures import ThreadPoolExecutor
 import requests
+from colorama import Fore, Style
 from scapy.layers.inet import IP, TCP
 from scapy.sendrecv import sr1
 import time
@@ -129,10 +131,13 @@ def detect_firewall(ip):
     except Exception as e:
         return f"Error detecting firewall: {e}"
 
-# Exploit Check and CVE Lookup with Caching and Multiple Sources
-def cve_check(service_name):
-    if service_name in cve_cache:
-        return cve_cache[service_name]
+# Exploit Check and CVE Lookup with Caching
+def cve_check(service_name, cache=None):
+    if cache is None:
+        cache = cve_cache  # Standardmäßig den globalen Cache verwenden
+
+    if service_name in cache:
+        return cache[service_name]
     try:
         api_urls = [
             f"https://cve.circl.lu/api/search/{service_name}",
@@ -144,10 +149,12 @@ def cve_check(service_name):
             response = requests.get(url, timeout=5)
             if response.status_code == 200:
                 cve_data.extend(response.json()[:5])
-        cve_cache[service_name] = cve_data if cve_data else "No CVE data found"
-        return cve_cache[service_name]
+        cache[service_name] = [cve["id"] for cve in cve_data] if cve_data else []
+        return cache[service_name]
     except Exception as e:
-        return f"Error fetching CVE data: {e}"
+        print(f"Error fetching CVE data for {service_name}: {e}")
+        return []
+
 
 # Helper Function to Resolve Domain, Subnet, or IP Range to a List of IPs
 def resolve_targets(target):
@@ -170,21 +177,26 @@ def resolve_targets(target):
 # Progress Display
 def show_progress(current, total):
     progress = (current / total) * 100
-    print(f"Progress: {progress:.2f}% ({current}/{total} ports scanned)", end="\r")
+    sys.stdout.write(f"\rProgress: {progress:.2f}% ({current}/{total} ports scanned)")
+    sys.stdout.flush()
 
 # Port Scanning Function
 def port_scan(ip, port, scan_type, timeout, report_path):
     try:
         protocol = protocols.get(port, "Unknown")
-        if scan_type in ["TCP", "SYN", "XMAS", "FIN", "NULL", "Version"]:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(timeout)
-                if s.connect_ex((ip, port)) == 0:
-                    result = f"[+] {ip}:{port} is open ({scan_type} Scan) - Protocol: {protocol}"
-                    print(result)
-                    write_report(result, report_path)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            if s.connect_ex((ip, port)) == 0:
+                cve_info = cve_check(protocol)  # CVEs abrufen
+                cve_summary = f" | CVEs: {', '.join(cve_info[:3])}" if cve_info else ""
+                result = f"{port:<6} open   {protocol}{cve_summary}"
+                write_report(result, report_path)
+                return {"port": port, "status": "open", "protocol": protocol, "cves": cve_info}
+            else:
+                return {"port": port, "status": "closed"}
     except Exception as e:
-        print(f"Error scanning port {port}: {e}")
+        return {"port": port, "status": "error", "error": str(e)}
+
 
 # Function to Write Report to File
 def write_report(data, report_path):

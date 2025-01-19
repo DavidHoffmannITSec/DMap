@@ -3,7 +3,7 @@ def display_help():
     help_text = """
 Advanced Port Scanner - Help Menu
 
-Usage: python advanced_port_scanner.py [TARGETS] [OPTIONS]
+Usage: python main.py [TARGETS] [OPTIONS]
 
 Targets:
   - Single IP: 192.168.1.1

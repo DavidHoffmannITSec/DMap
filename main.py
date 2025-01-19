@@ -1,27 +1,14 @@
-import threading
-from queue import Queue
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 from config import aggression_levels, top_100_ports
 from help import display_help
-from scan import resolve_targets, port_scan, show_progress
+from scan import *
 
-# CVE Cache
+# CVE-Cache global initialisieren
 cve_cache = {}
 
-# Worker Function for Multithreading
-def worker(scan_types, timeout, report_path, total_ports):
-    scanned_ports = 0
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        while not queue.empty():
-            ip, port = queue.get()
-            executor.submit(port_scan, ip, port, scan_types, timeout, report_path)
-            scanned_ports += 1
-            show_progress(scanned_ports, total_ports)
-            queue.task_done()
-
-# Main Function
-def main():
+# Argumente parsen
+def parse_arguments():
     parser = argparse.ArgumentParser(description="Advanced Port Scanner")
     parser.add_argument("targets", nargs='+', help="Target IP addresses, domains, subnets, or ranges")
     parser.add_argument("-sT", action="append_const", const="TCP", dest="scan_types", help="Perform TCP scan")
@@ -38,8 +25,75 @@ def main():
     parser.add_argument("-r", nargs=2, type=int, metavar=("START", "END"), help="Port range to scan")
     parser.add_argument("-o", help="Path to save the report")
     parser.add_argument("-help", action="store_true", help="Display this help menu")
+    return parser.parse_args()
 
-    args = parser.parse_args()
+# Ports basierend auf Argumenten auswählen
+def get_ports_to_scan(args):
+    if args.p:
+        return [int(p) for p in args.p.split(",")]
+    elif args.top:
+        return top_100_ports
+    elif args.r:
+        return range(args.r[0], args.r[1] + 1)
+    else:
+        return range(1, 65536)
+
+# Ziele auflösen
+def resolve_all_targets(targets):
+    all_ips = []
+    for target in targets:
+        ips = resolve_targets(target)
+        if not ips:
+            print(f"Error resolving target: {target}")
+        else:
+            all_ips.extend(ips)
+    return all_ips
+
+# Scans ausführen
+def run_scans(ip_list, ports_to_scan, scan_types, timeout, report_path, max_threads):
+    futures = {}
+    open_ports = []
+
+    with ThreadPoolExecutor(max_workers=max_threads) as executor:
+        for ip in ip_list:
+            for port in ports_to_scan:
+                future = executor.submit(port_scan, ip, port, scan_types, timeout, report_path)
+                futures[future] = port
+
+        print("\nScanning Results:\n")
+        for future in as_completed(futures):
+            port = futures[future]
+            try:
+                result = future.result()
+                if result["status"] == "open":
+                    protocol = result["protocol"]
+                    open_ports.append(f"Port: {port} [open] ({protocol})")
+                    print(Fore.GREEN + f"Port: {port:<6} [open] {protocol}" + Style.RESET_ALL)
+                elif result["status"] == "closed":
+                    print(Fore.RED + f"Port: {port:<6} [closed]" + Style.RESET_ALL)
+                elif result["status"] == "error":
+                    print(f"[Error scanning port {port}]: {result['error']}")
+            except Exception as e:
+                print(f"[Error scanning port {port}]: {e}")
+
+    return open_ports
+
+
+# Ergebnisse anzeigen
+def display_results(open_ports):
+    print("\n\nScan abgeschlossen.")
+    if open_ports:
+        print("\nGefundene offene Ports:")
+        for port_info in open_ports:
+            port_info = port_info.replace("[open]", Fore.GREEN + "[open]" + Style.RESET_ALL)
+            print(port_info)
+    else:
+        print("\nKeine offenen Ports gefunden.")
+
+
+# Hauptfunktion
+def main():
+    args = parse_arguments()
 
     if args.help:
         display_help()
@@ -48,32 +102,18 @@ def main():
     scan_types = args.scan_types if args.scan_types else ["TCP"]
     timeout = aggression_levels.get(args.t, 2)
     report_path = args.o
+    max_threads = args.mt
 
-    if args.p:
-        ports_to_scan = [int(p) for p in args.p.split(",")]
-    else:
-        ports_to_scan = top_100_ports if args.top else range(1, 65536)
+    ports_to_scan = get_ports_to_scan(args)
+    ip_list = resolve_all_targets(args.targets)
 
-    for target in args.targets:
-        ip_list = resolve_targets(target)
-        for ip in ip_list:
-            for port in ports_to_scan:
-                queue.put((ip, port))
+    if not ip_list:
+        print("Keine gültigen Ziele gefunden.")
+        return
 
-    thread_list = []
-    for _ in range(args.mt):
-        t = threading.Thread(target=worker, args=(scan_types, timeout, report_path, len(ip_list) * len(ports_to_scan)))
-        thread_list.append(t)
-        t.start()
+    open_ports = run_scans(ip_list, ports_to_scan, scan_types, timeout, report_path, max_threads)
+    display_results(open_ports)
 
-    for t in thread_list:
-        t.join()
-
-    print("\nScan completed.")
-
-
-# Queue for multithreading
-queue = Queue()
-
+# Programm starten
 if __name__ == "__main__":
     main()
